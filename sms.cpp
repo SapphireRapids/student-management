@@ -12,9 +12,12 @@
 //   sms.exe               控制台菜单 + HTTP 服务（默认端口 4399，仅监听本机）
 //   sms.exe --server      仅启动 HTTP 服务（供网页前端使用）
 //   sms.exe --port 9000   指定端口
+//   sms.exe --threads 2   HTTP 工作线程数（默认 4，范围 1~8，单机用 2 即可）
 //
-// 数据文件: students.txt  (UTF-8，每行: 学号,姓名,语文,数学,英语)
+// 数据文件: students.txt  (UTF-8，每行: 学号,姓名,语文,数学,英语；
+//                          保存走 students.txt.tmp + MoveFileEx 原子替换，断电不截断)
 // 前端页面: index.html    (与本程序同目录)
+// HTTP 并发: 固定工作线程 + 每个连接 10 秒收发超时，不会因刷新而无限起线程
 // ============================================================================
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -24,6 +27,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -31,6 +35,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <queue>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -58,6 +63,21 @@ std::vector<Student> g_students;       // 全部学生（学号唯一）
 std::mutex           g_mtx;            // 控制台线程与 HTTP 线程共用
 int                  g_port = kDefaultPort;
 SOCKET               g_listenSock = INVALID_SOCKET;
+
+// HTTP 连接处理策略：固定数量的工作线程 + 收发超时，
+// 避免每个连接都起一个线程（浏览器多开标签页反复刷新会堆积线程）。
+// 默认上限 4 个；单机自己用 2 个就够，可用 --threads N 调整（1~8）。
+const int   kHttpThreadsMin  = 1;        // --threads 允许的最小值
+const int   kHttpThreadsMax  = 8;        // --threads 允许的最大值
+const int   kMaxPending      = 64;       // 排队等待处理的连接上限
+const DWORD kSockTimeoutMs   = 10000;    // 单个连接单次 recv/send 的超时
+
+int g_httpThreads = 4;                   // 工作线程数，默认 4，运行时可用 --threads 改
+
+std::queue<SOCKET>      g_pending;     // 已 accept、等待处理的连接
+std::mutex              g_queueMtx;
+std::condition_variable g_queueCv;
+bool                    g_httpStop = false;
 
 // ------------------------------------------------------------------ 小工具
 std::string trim(const std::string& s) {
@@ -130,11 +150,36 @@ int findStudentLocked(const std::string& stuno) {
     return -1;
 }
 
+// 落盘走「先写临时文件、再原子替换」：写入过程中断电、强杀进程或蓝屏，
+// students.txt 里留下的仍是上一份完整内容，不会被截断成半截文件。
 void saveLocked() {
-    std::ofstream ofs(kDataFile, std::ios::binary);
-    for (const Student& s : g_students)
-        ofs << s.stuno << ',' << s.name << ',' << s.chinese << ','
-            << s.math << ',' << s.english << '\n';
+    const std::string tmp = std::string(kDataFile) + ".tmp";
+    bool wrote = false;
+    {
+        std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+        if (!ofs) {
+            std::printf("[警告] 打不开 %s，本次修改只保存在内存中。\n", tmp.c_str());
+            return;
+        }
+        for (const Student& s : g_students)
+            ofs << s.stuno << ',' << s.name << ',' << s.chinese << ','
+                << s.math << ',' << s.english << '\n';
+        ofs.flush();
+        wrote = (bool)ofs;
+        if (!wrote)
+            std::printf("[警告] 写入 %s 失败，本次修改只保存在内存中。\n", tmp.c_str());
+    }   // 先关闭文件句柄，否则 MoveFileEx / remove 会因文件被占用而失败
+    if (!wrote) {
+        std::remove(tmp.c_str());
+        return;
+    }
+    // MOVEFILE_WRITE_THROUGH：替换真正落盘后才返回，断电也不会丢刚保存的数据
+    if (!MoveFileExA(tmp.c_str(), kDataFile,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::remove(tmp.c_str());
+        std::printf("[警告] 替换 %s 失败（错误码 %lu），本次修改只保存在内存中。\n",
+                    kDataFile, (unsigned long)GetLastError());
+    }
 }
 
 void loadData() {
@@ -882,14 +927,63 @@ void handleConnection(SOCKET cli) {
     closesocket(cli);
 }
 
+// 工作线程：从队列取连接并处理。线程数固定（g_httpThreads，默认 4），
+// 连接再多也只是排队，不会一个连接起一个线程。
+void httpWorkerLoop() {
+    for (;;) {
+        SOCKET cli = INVALID_SOCKET;
+        {
+            std::unique_lock<std::mutex> lk(g_queueMtx);
+            g_queueCv.wait(lk, [] { return g_httpStop || !g_pending.empty(); });
+            if (g_pending.empty()) return;            // 只有停止时才会空着醒来
+            cli = g_pending.front();
+            g_pending.pop();
+        }
+        handleConnection(cli);
+    }
+}
+
 void httpAcceptLoop() {
     while (true) {
         sockaddr_in peer;
         int len = sizeof peer;
         SOCKET cli = accept(g_listenSock, (sockaddr*)&peer, &len);
         if (cli == INVALID_SOCKET) break;
-        std::thread(handleConnection, cli).detach();
+
+        // 单个连接的收发超时：客户端连上却不发数据、或发一半停住时，
+        // 线程最多卡 10 秒就会退出，不会永久占用worker。
+        DWORD ms = kSockTimeoutMs;
+        setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof ms);
+        setsockopt(cli, SOL_SOCKET, SO_SNDTIMEO, (const char*)&ms, sizeof ms);
+
+        {
+            std::lock_guard<std::mutex> lk(g_queueMtx);
+            if (g_httpStop || (int)g_pending.size() >= kMaxPending) {
+                closesocket(cli);                     // 排队已满，直接断开这个连接
+                continue;
+            }
+            g_pending.push(cli);
+        }
+        g_queueCv.notify_one();
     }
+}
+
+void stopHttpServer() {
+    if (g_listenSock != INVALID_SOCKET) {             // 让 accept 返回，跳出接收循环
+        closesocket(g_listenSock);
+        g_listenSock = INVALID_SOCKET;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_queueMtx);
+        g_httpStop = true;
+        while (!g_pending.empty()) {                  // 还没处理的连接直接关掉
+            closesocket(g_pending.front());
+            g_pending.pop();
+        }
+    }
+    g_queueCv.notify_all();
+    // 正在处理的连接会自行结束（受上面的超时约束）；程序最后走 ExitProcess，
+    // 不 join，避免退出时干等最多 10 秒。
 }
 
 bool startHttpServer(int port) {
@@ -914,7 +1008,10 @@ bool startHttpServer(int port) {
         g_listenSock = INVALID_SOCKET;
         return false;
     }
+    g_httpStop = false;
     std::thread(httpAcceptLoop).detach();
+    for (int i = 0; i < g_httpThreads; ++i)
+        std::thread(httpWorkerLoop).detach();
     return true;
 }
 
@@ -925,7 +1022,9 @@ void printUsage() {
         "  sms.exe               控制台菜单 + HTTP 服务(默认端口 %d)\n"
         "  sms.exe --server      仅启动 HTTP 服务(供网页前端使用)\n"
         "  sms.exe --port N      指定端口\n"
-        "  sms.exe --help        显示帮助\n", kDefaultPort);
+        "  sms.exe --threads N   HTTP 工作线程数，默认 4，范围 %d~%d(单机用 2 即可)\n"
+        "  sms.exe --help        显示帮助\n",
+        kDefaultPort, kHttpThreadsMin, kHttpThreadsMax);
 }
 
 }  // namespace
@@ -943,6 +1042,10 @@ int main(int argc, char** argv) {
             g_port = std::atoi(argv[++i]);
         } else if (a.rfind("--port=", 0) == 0) {
             g_port = std::atoi(a.c_str() + 7);
+        } else if (a == "--threads" && i + 1 < argc) {
+            g_httpThreads = std::atoi(argv[++i]);
+        } else if (a.rfind("--threads=", 0) == 0) {
+            g_httpThreads = std::atoi(a.c_str() + 10);
         } else if (a == "--help" || a == "-h") {
             printUsage();
             return 0;
@@ -954,6 +1057,10 @@ int main(int argc, char** argv) {
     }
     if (g_port < 1 || g_port > 65535) {
         std::printf("端口无效: %d\n", g_port);
+        return 1;
+    }
+    if (g_httpThreads < kHttpThreadsMin || g_httpThreads > kHttpThreadsMax) {
+        std::printf("线程数无效: %d（允许 %d~%d）\n", g_httpThreads, kHttpThreadsMin, kHttpThreadsMax);
         return 1;
     }
 
@@ -974,6 +1081,7 @@ int main(int argc, char** argv) {
         runConsole();
     }
 
+    stopHttpServer();                                // 先停止接收新连接，再落盘
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         saveLocked();
