@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学生成绩管理系统</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    background: #eef1f8;
+    color: #2b3245;
+    min-height: 100vh;
+  }
+  .banner {
+    background: linear-gradient(120deg, #4b6bf5 0%, #7b5cf0 60%, #9a5cf0 100%);
+    color: #fff;
+    padding: 28px 20px;
+    text-align: center;
+    box-shadow: 0 2px 12px rgba(75, 107, 245, .25);
+  }
+  .banner h1 { font-size: 26px; letter-spacing: 2px; }
+  .banner p  { margin-top: 6px; font-size: 13px; opacity: .85; }
+  .container { max-width: 1060px; margin: 24px auto 60px; padding: 0 16px; }
+
+  .alert {
+    background: #fff3f2; border: 1px solid #ffd1cc; color: #c0392b;
+    padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; font-size: 14px;
+  }
+  .hidden { display: none !important; }
+
+  .card {
+    background: #fff; border-radius: 14px; padding: 18px 20px;
+    box-shadow: 0 4px 18px rgba(43, 50, 69, .08);
+    margin-bottom: 18px;
+  }
+  .card h2 {
+    font-size: 16px; color: #4b6bf5; margin-bottom: 14px;
+    border-left: 4px solid #4b6bf5; padding-left: 8px;
+  }
+
+  /* ---------- 工具栏 ---------- */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .toolbar input[type="search"] {
+    width: 220px; padding: 8px 12px; border: 1px solid #d5dbe8; border-radius: 8px;
+    font-size: 14px; outline: none; transition: border-color .15s;
+  }
+  .toolbar input[type="search"]:focus { border-color: #4b6bf5; }
+  .divider { width: 1px; height: 24px; background: #e3e7f0; margin: 0 6px; }
+  .spacer { flex: 1; }
+
+  .btn {
+    border: 1px solid #d5dbe8; background: #fff; color: #2b3245;
+    padding: 8px 14px; border-radius: 8px; font-size: 14px; cursor: pointer;
+    transition: all .15s;
+  }
+  .btn:hover { border-color: #4b6bf5; color: #4b6bf5; }
+  .btn.primary { background: #4b6bf5; border-color: #4b6bf5; color: #fff; }
+  .btn.primary:hover { background: #3a5be0; color: #fff; }
+  .btn.danger { background: #e74c3c; border-color: #e74c3c; color: #fff; }
+  .btn.danger:hover { background: #cf4436; color: #fff; }
+  .btn.active { background: #eef1fe; border-color: #4b6bf5; color: #4b6bf5; font-weight: 600; }
+
+  /* ---------- 录入表单 ---------- */
+  .form-grid {
+    display: grid; grid-template-columns: repeat(5, 1fr) 1.4fr; gap: 12px;
+    align-items: end; padding: 14px; background: #f7f9fd; border-radius: 10px;
+  }
+  .form-grid label { font-size: 13px; color: #6a7387; display: flex; flex-direction: column; gap: 5px; }
+  .form-grid input {
+    padding: 8px 10px; border: 1px solid #d5dbe8; border-radius: 8px; font-size: 14px;
+    outline: none; width: 100%; background: #fff;
+  }
+  .form-grid input:focus { border-color: #4b6bf5; }
+  .form-grid input:disabled { background: #eef0f5; color: #8a93a8; }
+  .form-grid input.bad { border-color: #e74c3c; }
+  .form-btns { display: flex; gap: 8px; }
+  @media (max-width: 860px) { .form-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ---------- 统计 ---------- */
+  .stats { font-size: 13px; color: #6a7387; margin: 14px 2px 10px; }
+  .stats b { color: #4b6bf5; }
+
+  /* ---------- 表格 ---------- */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  thead th {
+    background: #4b6bf5; color: #fff; padding: 10px 12px; text-align: center;
+    font-weight: 600; white-space: nowrap;
+  }
+  thead th:first-child { border-radius: 8px 0 0 0; }
+  thead th:last-child  { border-radius: 0 8px 0 0; }
+  tbody td { padding: 9px 12px; text-align: center; border-bottom: 1px solid #edf0f7; }
+  tbody tr:nth-child(even) { background: #f7f9fd; }
+  tbody tr:hover { background: #eef1fe; }
+  td.total { font-weight: 700; color: #4b6bf5; }
+  td.good { color: #1e9e5a; font-weight: 600; }
+  td.bad  { color: #e74c3c; font-weight: 600; }
+  .empty-row td { padding: 30px; color: #8a93a8; }
+  .link-btn {
+    border: none; background: none; color: #4b6bf5; cursor: pointer;
+    font-size: 14px; padding: 2px 6px;
+  }
+  .link-btn:hover { text-decoration: underline; }
+  .link-btn.del { color: #e74c3c; }
+
+  .foot { text-align: center; font-size: 12px; color: #98a1b6; margin-top: 10px; line-height: 1.8; }
+
+  /* ---------- 操作提示（toast） ---------- */
+  .toast {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+    background: #fff; border-radius: 10px; padding: 11px 22px; font-size: 14px;
+    box-shadow: 0 6px 24px rgba(43, 50, 69, .18); border-left: 4px solid #4b6bf5;
+    z-index: 50; animation: drop .25s ease;
+    max-width: 80vw;
+  }
+  .toast.ok   { border-left-color: #1e9e5a; }
+  .toast.err  { border-left-color: #e74c3c; }
+  .toast.info { border-left-color: #4b6bf5; }
+  @keyframes drop { from { opacity: 0; transform: translate(-50%, -12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+  /* ---------- 删除确认弹窗 ---------- */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(20, 26, 43, .45);
+    display: flex; align-items: center; justify-content: center; z-index: 40;
+  }
+  .modal {
+    background: #fff; border-radius: 14px; padding: 24px; width: 340px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .25);
+  }
+  .modal h3 { font-size: 17px; margin-bottom: 10px; color: #e74c3c; }
+  .modal p { font-size: 14px; color: #4a5468; line-height: 1.7; margin-bottom: 18px; }
+  .modal p b { color: #2b3245; }
+  .modal-btns { display: flex; justify-content: flex-end; gap: 10px; }
+</style>
+</head>
+<body>
+
+<header class="banner">
+  <h1>学生成绩管理系统</h1>
+  <p>网页版 · 与后端程序实时共享数据（请先运行后端 sms.exe）</p>
+</header>
+
+<main class="container">
+
+  <div id="banner" class="alert hidden">
+    无法连接后端服务：请先运行后端程序 <b>sms.exe</b>（双击运行，或在命令行执行 <b>sms.exe --server</b>），然后刷新本页。
+  </div>
+
+  <!-- 录入 / 修改 -->
+  <section class="card">
+    <h2 id="formTitle">录入学生信息</h2>
+    <form id="form" class="form-grid" autocomplete="off">
+      <label>学号<input id="fStuno" maxlength="20" placeholder="如 2024001"></label>
+      <label>姓名<input id="fName" maxlength="20" placeholder="如 张三"></label>
+      <label>语文<input id="fChinese" type="number" min="0" max="100" step="1" placeholder="0~100"></label>
+      <label>数学<input id="fMath" type="number" min="0" max="100" step="1" placeholder="0~100"></label>
+      <label>英语<input id="fEnglish" type="number" min="0" max="100" step="1" placeholder="0~100"></label>
+      <div class="form-btns">
+        <button id="btnSubmit" type="submit" class="btn primary">录入</button>
+        <button id="btnCancelEdit" type="button" class="btn hidden">取消修改</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 查找 / 排序 -->
+  <section class="card">
+    <div class="toolbar">
+      <input id="searchInput" type="search" placeholder="输入学号或姓名关键字">
+      <button id="btnSearch" class="btn" type="button">查找</button>
+      <button id="btnClear" class="btn" type="button">清空条件</button>
+      <span class="divider"></span>
+      <button id="btnSortDesc" class="btn active" type="button">总分降序</button>
+      <button id="btnSortAsc" class="btn" type="button">总分升序</button>
+      <button id="btnSortStuno" class="btn" type="button">按学号</button>
+      <span class="spacer"></span>
+      <button id="btnRefresh" class="btn" type="button">刷新</button>
+    </div>
+
+    <div id="stats" class="stats"></div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>学号</th><th>姓名</th><th>语文</th><th>数学</th>
+            <th>英语</th><th>总分</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr class="empty-row"><td colspan="7">加载中……</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <p class="foot">
+    学生成绩管理系统 · 前端页面<br>
+    请先运行后端程序 sms.exe，再访问 http://127.0.0.1:4399/ （修改端口用 sms.exe --port 端口号）
+  </p>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+
+<div id="modal" class="modal-mask hidden">
+  <div class="modal">
+    <h3>删除确认</h3>
+    <p id="modalText"></p>
+    <div class="modal-btns">
+      <button id="modalCancel" class="btn" type="button">取消</button>
+      <button id="modalOk" class="btn danger" type="button">确定删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+
+  var sortMode = "total_desc";   // total_desc | total_asc | stuno
+  var keyword = "";
+  var editStuno = null;          // 非 null 表示处于修改模式
+  var toastTimer = null;
+  var modalOkHandler = null;
+
+  /* ---------------- 操作提示 ---------------- */
+  function toast(msg, kind) {
+    var t = $("toast");
+    t.textContent = (kind === "err" ? "✗ " : kind === "info" ? "» " : "✓ ") + msg;
+    t.className = "toast " + (kind || "ok");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.add("hidden"); }, 2600);
+  }
+
+  function backendDown() {
+    $("banner").classList.remove("hidden");
+    toast("无法连接后端服务，请先运行后端程序 sms.exe", "err");
+  }
+
+  /* ---------------- 数据加载 ---------------- */
+  function load() {
+    var q = new URLSearchParams({ sort: sortMode });
+    if (keyword) q.set("q", keyword);
+    return fetch("/api/students?" + q.toString())
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        $("banner").classList.add("hidden");
+        render(data.students || []);
+      })
+      .catch(function () {
+        backendDown();
+        render([]);
+      });
+  }
+
+  function scoreCls(v) { return v >= 90 ? "good" : (v < 60 ? "bad" : ""); }
+
+  function render(list) {
+    var tbody = $("tbody");
+    tbody.textContent = "";
+    if (!list.length) {
+      var tr = document.createElement("tr");
+      tr.className = "empty-row";
+      var td = document.createElement("td");
+      td.colSpan = 7;
+      td.textContent = keyword ? "没有找到匹配的学生。" : "暂无学生信息，请在上方录入。";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      list.forEach(function (s) {
+        var tr = document.createElement("tr");
+
+        [s.stuno, s.name].forEach(function (txt) {
+          var td = document.createElement("td");
+          td.textContent = txt;
+          tr.appendChild(td);
+        });
+        [s.chinese, s.math, s.english].forEach(function (v) {
+          var td = document.createElement("td");
+          td.textContent = v;
+          td.className = scoreCls(v);
+          tr.appendChild(td);
+        });
+        var tdTotal = document.createElement("td");
+        tdTotal.className = "total";
+        tdTotal.textContent = s.total;
+        tr.appendChild(tdTotal);
+
+        var tdOp = document.createElement("td");
+        var bEdit = document.createElement("button");
+        bEdit.type = "button";
+        bEdit.className = "link-btn";
+        bEdit.textContent = "修改";
+        bEdit.onclick = function () { startEdit(s); };
+        var bDel = document.createElement("button");
+        bDel.type = "button";
+        bDel.className = "link-btn del";
+        bDel.textContent = "删除";
+        bDel.onclick = function () { askDelete(s); };
+        tdOp.appendChild(bEdit);
+        tdOp.appendChild(document.createTextNode(" | "));
+        tdOp.appendChild(bDel);
+        tr.appendChild(tdOp);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    var total = 0, maxS = null;
+    list.forEach(function (s) {
+      total += s.total;
+      if (!maxS || s.total > maxS.total) maxS = s;
+    });
+    var html = "";
+    if (list.length) {
+      var avg = (total / list.length).toFixed(1);
+      html = "共 <b>" + list.length + "</b> 名学生 · 平均总分 <b>" + avg + "</b>" +
+             " · 最高总分 <b>" + maxS.name + "（" + maxS.total + " 分）</b>";
+      if (keyword) html += " · 关键字「" + keyword + "」";
+    } else {
+      html = "暂无统计数据";
+    }
+    $("stats").innerHTML = html;
+  }
+
+  /* ---------------- 录入 / 修改 ---------------- */
+  function setEditing(on, s) {
+    editStuno = on ? s.stuno : null;
+    $("fStuno").disabled = on;
+    $("formTitle").textContent = on ? "修改学生信息（学号 " + s.stuno + "）" : "录入学生信息";
+    $("btnSubmit").textContent = on ? "保存修改" : "录入";
+    $("btnCancelEdit").classList.toggle("hidden", !on);
+    ["fStuno", "fName", "fChinese", "fMath", "fEnglish"].forEach(function (id) {
+      $(id).classList.remove("bad");
+    });
+  }
+
+  function startEdit(s) {
+    $("fStuno").value = s.stuno;
+    $("fName").value = s.name;
+    $("fChinese").value = s.chinese;
+    $("fMath").value = s.math;
+    $("fEnglish").value = s.english;
+    setEditing(true, s);
+    toast("已进入修改模式，修改后点击「保存修改」", "info");
+  }
+
+  function cancelEdit() {
+    $("form").reset();
+    setEditing(false, null);
+  }
+
+  function validForm() {
+    var ok = true;
+    var stuno = $("fStuno").value.trim();
+    var name = $("fName").value.trim();
+    var nums = ["fChinese", "fMath", "fEnglish"].map(function (id) { return $(id).value.trim(); });
+
+    function mark(id, bad) { $(id).classList.toggle("bad", bad); if (bad) ok = false; }
+    mark("fStuno", !stuno || stuno.length > 20);
+    mark("fName", !name);
+    nums.forEach(function (v, i) {
+      var bad = v === "" || !/^\d+$/.test(v) || +v > 100;
+      mark(["fChinese", "fMath", "fEnglish"][i], bad);
+    });
+    return ok;
+  }
+
+  $("form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (!validForm()) {
+      toast("输入有误：学号/姓名不能为空，成绩须为 0~100 的整数", "err");
+      return;
+    }
+    var payload = {
+      stuno: $("fStuno").value.trim(),
+      name: $("fName").value.trim(),
+      chinese: +$("fChinese").value.trim(),
+      math: +$("fMath").value.trim(),
+      english: +$("fEnglish").value.trim()
+    };
+    var url = "/api/students";
+    var method = "POST";
+    if (editStuno) {
+      url = "/api/students/" + encodeURIComponent(editStuno);
+      method = "PUT";
+    }
+    fetch(url, {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.body.ok) {
+          toast(editStuno ? "修改成功：" + res.body.student.name + "（总分 " + res.body.student.total + "）"
+                          : "录入成功：" + res.body.student.stuno + " " + res.body.student.name + "（总分 " + res.body.student.total + "）");
+          cancelEdit();
+          return load();
+        }
+        toast("操作失败：" + (res.body.error || ("HTTP " + res.status)), "err");
+      })
+      .catch(function () { backendDown(); });
+  });
+
+  $("btnCancelEdit").addEventListener("click", function () {
+    cancelEdit();
+    toast("已取消修改", "info");
+  });
+
+  /* ---------------- 删除（带确认） ---------------- */
+  function askDelete(s) {
+    var box = $("modalText");
+    box.textContent = "";
+    box.appendChild(document.createTextNode("确定删除学生 "));
+    var b = document.createElement("b");
+    b.textContent = s.name;
+    box.appendChild(b);
+    box.appendChild(document.createTextNode("（学号 " + s.stuno + "，总分 " + s.total + "）吗？删除后不可恢复。"));
+    $("modal").classList.remove("hidden");
+    modalOkHandler = function () {
+      fetch("/api/students/" + encodeURIComponent(s.stuno), { method: "DELETE" })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (res) {
+          if (res.ok && res.body.ok) {
+            toast("已删除学生：" + s.name + "（学号 " + s.stuno + "）");
+            closeModal();
+            if (editStuno === s.stuno) cancelEdit();
+            return load();
+          }
+          toast("删除失败：" + (res.body.error || "未知错误"), "err");
+          closeModal();
+        })
+        .catch(function () { backendDown(); closeModal(); });
+    };
+  }
+
+  function closeModal() {
+    $("modal").classList.add("hidden");
+    modalOkHandler = null;
+  }
+
+  $("modalOk").addEventListener("click", function () {
+    if (modalOkHandler) modalOkHandler();
+  });
+  $("modalCancel").addEventListener("click", function () {
+    closeModal();
+    toast("已取消删除", "info");
+  });
+  $("modal").addEventListener("click", function (ev) {
+    if (ev.target === $("modal")) {
+      closeModal();
+      toast("已取消删除", "info");
+    }
+  });
+
+  /* ---------------- 查找 / 排序 / 刷新 ---------------- */
+  $("btnSearch").addEventListener("click", function () {
+    keyword = $("searchInput").value.trim();
+    return load().then(function () {
+      toast(keyword ? "已按关键字「" + keyword + "」查找" : "已显示全部学生", "info");
+    });
+  });
+  $("searchInput").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") { ev.preventDefault(); $("btnSearch").click(); }
+  });
+  $("btnClear").addEventListener("click", function () {
+    $("searchInput").value = "";
+    keyword = "";
+    return load().then(function () { toast("已清空查找条件", "info"); });
+  });
+  $("btnRefresh").addEventListener("click", function () {
+    return load().then(function () { toast("已刷新数据", "info"); });
+  });
+
+  function bindSort(id, mode, label) {
+    $(id).addEventListener("click", function () {
+      sortMode = mode;
+      ["btnSortDesc", "btnSortAsc", "btnSortStuno"].forEach(function (b) {
+        $(b).classList.remove("active");
+      });
+      $(id).classList.add("active");
+      return load().then(function () { toast(label, "info"); });
+    });
+  }
+  bindSort("btnSortDesc", "total_desc", "已按总分从高到低排序");
+  bindSort("btnSortAsc", "total_asc", "已按总分从低到高排序");
+  bindSort("btnSortStuno", "stuno", "已按学号排序");
+
+  /* ---------------- 启动 ---------------- */
+  cancelEdit();
+  load().then(function () { toast("学生成绩管理系统已就绪", "info"); });
+})();
+</script>
+</body>
+</html>
