@@ -63,7 +63,7 @@
 
   /* ---------- 录入表单 ---------- */
   .form-grid {
-    display: grid; grid-template-columns: repeat(5, 1fr) 1.4fr; gap: 12px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr 1.4fr; gap: 12px;
     align-items: end; padding: 14px; background: #f7f9fd; border-radius: 10px;
   }
   .form-grid label { font-size: 13px; color: #6a7387; display: flex; flex-direction: column; gap: 5px; }
@@ -153,9 +153,7 @@
     <form id="form" class="form-grid" autocomplete="off">
       <label>学号<input id="fStuno" maxlength="20" placeholder="如 2024001"></label>
       <label>姓名<input id="fName" maxlength="20" placeholder="如 张三"></label>
-      <label>语文<input id="fChinese" type="number" min="0" max="100" step="1" placeholder="0~100"></label>
-      <label>数学<input id="fMath" type="number" min="0" max="100" step="1" placeholder="0~100"></label>
-      <label>英语<input id="fEnglish" type="number" min="0" max="100" step="1" placeholder="0~100"></label>
+      <label>总分<input id="fTotal" type="number" min="0" max="1000" step="1" placeholder="0~1000"></label>
       <div class="form-btns">
         <button id="btnSubmit" type="submit" class="btn primary">录入</button>
         <button id="btnCancelEdit" type="button" class="btn hidden">取消修改</button>
@@ -183,12 +181,11 @@
       <table>
         <thead>
           <tr>
-            <th>学号</th><th>姓名</th><th>语文</th><th>数学</th>
-            <th>英语</th><th>总分</th><th>操作</th>
+            <th>学号</th><th>姓名</th><th>总分</th><th>操作</th>
           </tr>
         </thead>
         <tbody id="tbody">
-          <tr class="empty-row"><td colspan="7">加载中……</td></tr>
+          <tr class="empty-row"><td colspan="4">加载中……</td></tr>
         </tbody>
       </table>
     </div>
@@ -257,7 +254,7 @@
       });
   }
 
-  function scoreCls(v) { return v >= 90 ? "good" : (v < 60 ? "bad" : ""); }
+  function scoreCls(v) { return v >= 900 ? "good" : (v < 600 ? "bad" : ""); }
 
   function render(list) {
     var tbody = $("tbody");
@@ -266,7 +263,7 @@
       var tr = document.createElement("tr");
       tr.className = "empty-row";
       var td = document.createElement("td");
-      td.colSpan = 7;
+      td.colSpan = 4;
       td.textContent = keyword ? "没有找到匹配的学生。" : "暂无学生信息，请在上方录入。";
       tr.appendChild(td);
       tbody.appendChild(tr);
@@ -279,14 +276,8 @@
           td.textContent = txt;
           tr.appendChild(td);
         });
-        [s.chinese, s.math, s.english].forEach(function (v) {
-          var td = document.createElement("td");
-          td.textContent = v;
-          td.className = scoreCls(v);
-          tr.appendChild(td);
-        });
         var tdTotal = document.createElement("td");
-        tdTotal.className = "total";
+        tdTotal.className = "total " + scoreCls(s.total);
         tdTotal.textContent = s.total;
         tr.appendChild(tdTotal);
 
@@ -334,7 +325,7 @@
     $("formTitle").textContent = on ? "修改学生信息（学号 " + s.stuno + "）" : "录入学生信息";
     $("btnSubmit").textContent = on ? "保存修改" : "录入";
     $("btnCancelEdit").classList.toggle("hidden", !on);
-    ["fStuno", "fName", "fChinese", "fMath", "fEnglish"].forEach(function (id) {
+    ["fStuno", "fName", "fTotal"].forEach(function (id) {
       $(id).classList.remove("bad");
     });
   }
@@ -342,9 +333,7 @@
   function startEdit(s) {
     $("fStuno").value = s.stuno;
     $("fName").value = s.name;
-    $("fChinese").value = s.chinese;
-    $("fMath").value = s.math;
-    $("fEnglish").value = s.english;
+    $("fTotal").value = s.total;
     setEditing(true, s);
     toast("已进入修改模式，修改后点击「保存修改」", "info");
   }
@@ -358,30 +347,26 @@
     var ok = true;
     var stuno = $("fStuno").value.trim();
     var name = $("fName").value.trim();
-    var nums = ["fChinese", "fMath", "fEnglish"].map(function (id) { return $(id).value.trim(); });
+    var t = $("fTotal").value.trim();
 
     function mark(id, bad) { $(id).classList.toggle("bad", bad); if (bad) ok = false; }
     mark("fStuno", !stuno || stuno.length > 20);
     mark("fName", !name);
-    nums.forEach(function (v, i) {
-      var bad = v === "" || !/^\d+$/.test(v) || +v > 100;
-      mark(["fChinese", "fMath", "fEnglish"][i], bad);
-    });
+    var badTotal = t === "" || !/^\d+$/.test(t) || +t > 1000;
+    mark("fTotal", badTotal);
     return ok;
   }
 
   $("form").addEventListener("submit", function (ev) {
     ev.preventDefault();
     if (!validForm()) {
-      toast("输入有误：学号/姓名不能为空，成绩须为 0~100 的整数", "err");
+      toast("输入有误：学号/姓名不能为空，总分须为 0~1000 的整数", "err");
       return;
     }
     var payload = {
       stuno: $("fStuno").value.trim(),
       name: $("fName").value.trim(),
-      chinese: +$("fChinese").value.trim(),
-      math: +$("fMath").value.trim(),
-      english: +$("fEnglish").value.trim()
+      total: +$("fTotal").value.trim()
     };
     var url = "/api/students";
     var method = "POST";

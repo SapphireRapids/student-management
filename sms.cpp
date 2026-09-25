@@ -14,8 +14,9 @@
 //   sms.exe --port 9000   指定端口
 //   sms.exe --threads 2   HTTP 工作线程数（默认 1，最多 2，范围 1~2）
 //
-// 数据文件: students.txt  (UTF-8，每行: 学号,姓名,语文,数学,英语；
+// 数据文件: students.txt  (UTF-8，每行: 学号,姓名,总分；
 //                          保存走 students.txt.tmp + MoveFileEx 原子替换，断电不截断)
+//                          旧版"学号,姓名,语文,数学,英语"读入时自动按三科之和转成总分
 // 前端页面: index.html    (与本程序同目录)
 // HTTP 并发: 固定工作线程 + 每个连接 10 秒收发超时，不会因刷新而无限起线程
 // ============================================================================
@@ -48,15 +49,14 @@ namespace {
 const char* kDataFile   = "students.txt";
 const char* kIndexFile  = "index.html";
 const int   kDefaultPort = 4399;
+const int   kTotalMin = 0;        // 总分下限
+const int   kTotalMax = 1000;     // 总分上限
 
 // ------------------------------------------------------------------ 数据模型
 struct Student {
     std::string stuno;                 // 学号
     std::string name;                  // 姓名
-    int chinese = 0;                   // 语文
-    int math = 0;                      // 数学
-    int english = 0;                   // 英语
-    int total() const { return chinese + math + english; }
+    int total = 0;                     // 总分
 };
 
 std::vector<Student> g_students;       // 全部学生（学号唯一）
@@ -162,8 +162,7 @@ void saveLocked() {
             return;
         }
         for (const Student& s : g_students)
-            ofs << s.stuno << ',' << s.name << ',' << s.chinese << ','
-                << s.math << ',' << s.english << '\n';
+            ofs << s.stuno << ',' << s.name << ',' << s.total << '\n';
         ofs.flush();
         wrote = (bool)ofs;
         if (!wrote)
@@ -183,22 +182,38 @@ void saveLocked() {
 }
 
 void loadData() {
-    std::ifstream ifs(kDataFile);
-    if (!ifs) return;
-    std::string line;
-    while (std::getline(ifs, line)) {
-        if (line.empty()) continue;
-        std::vector<std::string> f;
-        std::stringstream ss(line);
-        std::string item;
-        while (std::getline(ss, item, ',')) f.push_back(item);
-        if (f.size() != 5) continue;
-        Student s;
-        s.stuno = f[0]; s.name = f[1];
-        s.chinese = atoi(f[2].c_str());
-        s.math    = atoi(f[3].c_str());
-        s.english = atoi(f[4].c_str());
-        if (validField(s.stuno) && validField(s.name)) g_students.push_back(s);
+    bool legacy = false;      // 读到旧版五字段格式则置位
+    {   // 读文件用独立作用域：句柄必须先关掉，否则后面的 MoveFileExA 原子替换
+        // 会因共享冲突失败（MSVC 的 ifstream 打开时不带 FILE_SHARE_DELETE）
+        std::ifstream ifs(kDataFile);
+        if (!ifs) return;
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (line.empty()) continue;
+            std::vector<std::string> f;
+            std::stringstream ss(line);
+            std::string item;
+            while (std::getline(ss, item, ',')) f.push_back(item);
+            Student s;
+            if (f.size() == 3) {                   // 新版：学号,姓名,总分
+                s.stuno = f[0]; s.name = f[1];
+                s.total = atoi(f[2].c_str());
+            } else if (f.size() == 5) {            // 旧版：学号,姓名,语,数,英 → 求和得到总分
+                s.stuno = f[0]; s.name = f[1];
+                s.total = atoi(f[2].c_str()) + atoi(f[3].c_str()) + atoi(f[4].c_str());
+                legacy = true;
+            } else {
+                continue;
+            }
+            if (validField(s.stuno) && validField(s.name)) g_students.push_back(s);
+        }
+    }
+    // 旧格式立刻转存成新格式：之后断电、强杀都不会把两种格式混在一起
+    if (legacy) {
+        std::printf("[提示] 检测到旧版数据（学号,姓名,语文,数学,英语），"
+                    "已按三科之和转为总分并保存为新格式。\n");
+        std::fflush(stdout);
+        saveLocked();
     }
 }
 
@@ -220,8 +235,8 @@ bool readLine(const char* prompt, std::string& out) {
     return true;
 }
 
-// 读取 0~100 的成绩；非数字/越界要求重输，不会死循环
-bool readScore(const char* prompt, int& out) {
+// 读取总分；非数字/越界要求重输，不会死循环
+bool readTotal(const char* prompt, int& out) {
     std::string line;
     while (true) {
         if (!readLine(prompt, line)) return false;   // EOF
@@ -231,8 +246,8 @@ bool readScore(const char* prompt, int& out) {
             if (!std::isdigit((unsigned char)c)) { digits = false; break; }
         if (!digits) { std::printf("输入无效，请输入数字。\n"); continue; }
         long v = std::strtol(line.c_str(), nullptr, 10);
-        if (v < 0 || v > 100) {
-            std::printf("成绩必须在 0~100 之间，请重新输入。\n");
+        if (v < kTotalMin || v > kTotalMax) {
+            std::printf("总分必须在 %d~%d 之间，请重新输入。\n", kTotalMin, kTotalMax);
             continue;
         }
         out = (int)v;
@@ -240,8 +255,8 @@ bool readScore(const char* prompt, int& out) {
     }
 }
 
-// 读取成绩，直接回车表示保持不变（修改功能用）
-bool readScoreKeep(const char* prompt, int oldVal, int& out) {
+// 读取总分，直接回车表示保持不变（修改功能用）
+bool readTotalKeep(const char* prompt, int oldVal, int& out) {
     std::string line;
     while (true) {
         if (!readLine(prompt, line)) return false;
@@ -251,8 +266,8 @@ bool readScoreKeep(const char* prompt, int oldVal, int& out) {
             if (!std::isdigit((unsigned char)c)) { digits = false; break; }
         if (!digits) { std::printf("输入无效，请输入数字。\n"); continue; }
         long v = std::strtol(line.c_str(), nullptr, 10);
-        if (v < 0 || v > 100) {
-            std::printf("成绩必须在 0~100 之间，请重新输入。\n");
+        if (v < kTotalMin || v > kTotalMax) {
+            std::printf("总分必须在 %d~%d 之间，请重新输入。\n", kTotalMin, kTotalMax);
             continue;
         }
         out = (int)v;
@@ -279,20 +294,15 @@ void printTable(const std::vector<Student>& list) {
         return;
     }
     std::printf("\n");
-    std::printf("%s%s%s%s%s%s\n",
-                pad("学号",   12).c_str(), pad("姓名", 12).c_str(),
-                pad("语文",    8).c_str(), pad("数学",  8).c_str(),
-                pad("英语",    8).c_str(), pad("总分",  8).c_str());
+    std::printf("%s%s%s\n",
+                pad("学号", 12).c_str(), pad("姓名", 12).c_str(),
+                pad("总分", 8).c_str());
     for (const Student& s : list) {
-        char num[8][16];
-        std::snprintf(num[0], 16, "%d", s.chinese);
-        std::snprintf(num[1], 16, "%d", s.math);
-        std::snprintf(num[2], 16, "%d", s.english);
-        std::snprintf(num[3], 16, "%d", s.total());
-        std::printf("%s%s%s%s%s%s\n",
+        char num[1][16];
+        std::snprintf(num[0], 16, "%d", s.total);
+        std::printf("%s%s%s\n",
                     pad(s.stuno, 12).c_str(), pad(s.name, 12).c_str(),
-                    pad(num[0], 8).c_str(), pad(num[1], 8).c_str(),
-                    pad(num[2], 8).c_str(), pad(num[3], 8).c_str());
+                    pad(num[0], 8).c_str());
     }
     std::printf("共 %zu 名学生。\n", list.size());
 }
@@ -318,9 +328,7 @@ void opAdd() {
         Student s;
         s.stuno = stuno;
         s.name  = name;
-        if (!readScore("请输入语文成绩(0~100): ", s.chinese)) return;
-        if (!readScore("请输入数学成绩(0~100): ", s.math))    return;
-        if (!readScore("请输入英语成绩(0~100): ", s.english)) return;
+        if (!readTotal("请输入总分(0~1000): ", s.total)) return;
 
         {
             std::lock_guard<std::mutex> lk(g_mtx);
@@ -331,7 +339,7 @@ void opAdd() {
             g_students.push_back(s);
             saveLocked();
         }
-        std::printf("录入成功：%s %s（总分 %d）。\n", name.c_str(), stuno.c_str(), s.total());
+        std::printf("录入成功：%s %s（总分 %d）。\n", name.c_str(), stuno.c_str(), s.total);
         return;
     }
 }
@@ -353,7 +361,7 @@ void opDelete() {
         return;
     }
     const Student& s = g_students[idx];
-    std::printf("找到学生：%s %s（总分 %d）\n", s.name.c_str(), s.stuno.c_str(), s.total());
+    std::printf("找到学生：%s %s（总分 %d）\n", s.name.c_str(), s.stuno.c_str(), s.total);
     char prompt[128];
     std::snprintf(prompt, sizeof prompt, "确认删除学号 %s 的学生吗? (y/n): ", stuno.c_str());
     bool yes = false;
@@ -379,8 +387,8 @@ void opModify() {
         return;
     }
     Student& s = g_students[idx];
-    std::printf("当前信息：学号 %s，姓名 %s，语文 %d，数学 %d，英语 %d，总分 %d\n",
-                s.stuno.c_str(), s.name.c_str(), s.chinese, s.math, s.english, s.total());
+    std::printf("当前信息：学号 %s，姓名 %s，总分 %d\n",
+                s.stuno.c_str(), s.name.c_str(), s.total);
     std::printf("（直接回车表示保持不变）\n");
 
     std::string tmp;
@@ -389,13 +397,11 @@ void opModify() {
         if (!validField(tmp)) { std::printf("姓名含非法字符，修改失败。\n"); return; }
         s.name = tmp;
     }
-    int c = 0, m = 0, e = 0;
-    if (!readScoreKeep("新语文成绩(0~100): ", s.chinese, c)) return;
-    if (!readScoreKeep("新数学成绩(0~100): ", s.math,    m)) return;
-    if (!readScoreKeep("新英语成绩(0~100): ", s.english, e)) return;
-    s.chinese = c; s.math = m; s.english = e;
+    int t = 0;
+    if (!readTotalKeep("新总分(0~1000): ", s.total, t)) return;
+    s.total = t;
     saveLocked();
-    std::printf("修改成功：%s %s（总分 %d）。\n", s.name.c_str(), s.stuno.c_str(), s.total());
+    std::printf("修改成功：%s %s（总分 %d）。\n", s.name.c_str(), s.stuno.c_str(), s.total);
 }
 
 void opSearch() {
@@ -425,11 +431,11 @@ void opSort() {
     std::lock_guard<std::mutex> lk(g_mtx);
     if (line == "1") {
         std::stable_sort(g_students.begin(), g_students.end(),
-                         [](const Student& a, const Student& b) { return a.total() > b.total(); });
+                         [](const Student& a, const Student& b) { return a.total > b.total; });
         std::printf("已按总分从高到低排序。\n");
     } else {
         std::stable_sort(g_students.begin(), g_students.end(),
-                         [](const Student& a, const Student& b) { return a.total() < b.total(); });
+                         [](const Student& a, const Student& b) { return a.total < b.total; });
         std::printf("已按总分从低到高排序。\n");
     }
     saveLocked();
@@ -605,8 +611,8 @@ std::string studentJson(const Student& s) {
     std::string nm = jsonEscape(s.name);
     char buf[512];
     std::snprintf(buf, sizeof buf,
-                  "{\"stuno\":\"%s\",\"name\":\"%s\",\"chinese\":%d,\"math\":%d,\"english\":%d,\"total\":%d}",
-                  st.c_str(), nm.c_str(), s.chinese, s.math, s.english, s.total());
+                  "{\"stuno\":\"%s\",\"name\":\"%s\",\"total\":%d}",
+                  st.c_str(), nm.c_str(), s.total);
     return buf;
 }
 
@@ -677,23 +683,20 @@ std::string readFileBinary(const char* path) {
     return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
 }
 
-// 从请求体取得成绩字段，失败返回错误信息（success=false）
-bool parseScores(const std::string& body, Student& s, std::string& err) {
+// 从请求体取得总分字段，失败返回错误信息（success=false）
+bool parseTotal(const std::string& body, Student& s, std::string& err) {
     std::string vs; double dv; bool isNum;
-    const char* keys[3] = {"chinese", "math", "english"};
-    int* targets[3]  = {&s.chinese, &s.math, &s.english};
-    const char* names[3] = {"语文", "数学", "英语"};
-    for (int i = 0; i < 3; ++i) {
-        if (!jsonGet(body, keys[i], vs, dv, isNum) || !isNum) {
-            err = std::string("缺少或非法的") + names[i] + "成绩";
-            return false;
-        }
-        if (dv != (double)(int)dv || dv < 0 || dv > 100) {
-            err = std::string(names[i]) + "成绩必须是 0~100 的整数";
-            return false;
-        }
-        *targets[i] = (int)dv;
+    if (!jsonGet(body, "total", vs, dv, isNum) || !isNum) {
+        err = "缺少或非法的总分";
+        return false;
     }
+    if (dv != (double)(int)dv || dv < kTotalMin || dv > kTotalMax) {
+        char b[64];
+        std::snprintf(b, sizeof b, "总分必须是 %d~%d 的整数", kTotalMin, kTotalMax);
+        err = b;
+        return false;
+    }
+    s.total = (int)dv;
     return true;
 }
 
@@ -718,13 +721,13 @@ void handleApi(SOCKET cli, HttpRequest& req) {
             }
             if (sortMode == "total_asc") {
                 std::stable_sort(list.begin(), list.end(),
-                                 [](const Student& a, const Student& b) { return a.total() < b.total(); });
+                                 [](const Student& a, const Student& b) { return a.total < b.total; });
             } else if (sortMode == "stuno") {
                 std::stable_sort(list.begin(), list.end(),
                                  [](const Student& a, const Student& b) { return a.stuno < b.stuno; });
             } else {   // total_desc 默认
                 std::stable_sort(list.begin(), list.end(),
-                                 [](const Student& a, const Student& b) { return a.total() > b.total(); });
+                                 [](const Student& a, const Student& b) { return a.total > b.total; });
             }
             std::string js = "{\"students\":[";
             for (size_t i = 0; i < list.size(); ++i) {
@@ -761,7 +764,7 @@ void handleApi(SOCKET cli, HttpRequest& req) {
                 sendJson(cli, 400, "Bad Request", "{\"ok\":false,\"error\":\"姓名含非法字符\"}");
                 return;
             }
-            if (!parseScores(req.body, s, err)) {
+            if (!parseTotal(req.body, s, err)) {
                 sendJson(cli, 400, "Bad Request",
                          "{\"ok\":false,\"error\":\"" + jsonEscape(err) + "\"}");
                 return;
@@ -823,8 +826,8 @@ void handleApi(SOCKET cli, HttpRequest& req) {
                 }
                 s.name = nm;
             }
-            Student probe = s;                    // 校验成绩用副本
-            if (!parseScores(req.body, probe, err)) {
+            Student probe = s;                    // 校验总分用副本
+            if (!parseTotal(req.body, probe, err)) {
                 sendJson(cli, 400, "Bad Request",
                          "{\"ok\":false,\"error\":\"" + jsonEscape(err) + "\"}");
                 return;
