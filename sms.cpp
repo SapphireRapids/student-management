@@ -5,11 +5,11 @@
 //   1、录入学生信息   2、显示学生信息   3、删除学生信息
 //   4、修改学生信息   5、查找学生信息   6、按总分排序   0、退出系统
 //
-// 网页端功能（http://127.0.0.1:8080/ ）:
+// 网页端功能（http://127.0.0.1:4399/ ）:
 //   表格展示 / 录入 / 修改 / 删除（带确认）/ 查找 / 排序 / 操作提示
 //
 // 用法:
-//   sms.exe               控制台菜单 + HTTP 服务（默认端口 8080）
+//   sms.exe               控制台菜单 + HTTP 服务（默认端口 4399，仅监听本机）
 //   sms.exe --server      仅启动 HTTP 服务（供网页前端使用）
 //   sms.exe --port 9000   指定端口
 //
@@ -587,9 +587,6 @@ void sendResponse(SOCKET cli, int code, const char* status,
     r += "HTTP/1.1 "; r += std::to_string(code); r += ' '; r += status; r += "\r\n";
     r += "Content-Type: "; r += type; r += "\r\n";
     r += "Content-Length: "; r += std::to_string(body.size()); r += "\r\n";
-    r += "Access-Control-Allow-Origin: *\r\n";
-    r += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
-    r += "Access-Control-Allow-Headers: Content-Type\r\n";
     r += "Cache-Control: no-store\r\n";
     r += "Connection: close\r\n\r\n";
     r += body;
@@ -657,11 +654,6 @@ bool parseScores(const std::string& body, Student& s, std::string& err) {
 
 void handleApi(SOCKET cli, HttpRequest& req) {
     std::string path = req.path;
-
-    if (req.method == "OPTIONS") {           // CORS 预检
-        sendJson(cli, 204, "No Content", "");
-        return;
-    }
 
     if (path == "/api/students") {
         if (req.method == "GET") {
@@ -910,7 +902,7 @@ bool startHttpServer(int port) {
     sockaddr_in addr;
     std::memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons((u_short)port);
     if (bind(g_listenSock, (sockaddr*)&addr, sizeof addr) == SOCKET_ERROR) {
         closesocket(g_listenSock);
@@ -970,7 +962,7 @@ int main(int argc, char** argv) {
     if (!startHttpServer(g_port)) {
         std::printf("\n[提示] HTTP 服务启动失败（端口 %d 可能被占用），仅使用控制台功能。\n", g_port);
     } else {
-        std::printf("\n[提示] HTTP 服务已启动: http://127.0.0.1:%d/\n", g_port);
+        std::printf("\n[提示] HTTP 服务已启动: http://127.0.0.1:%d/ （仅监听本机，局域网内其他设备无法访问）\n", g_port);
         std::printf("[提示] 控制台与网页共用同一份数据；关闭本窗口或输入 0 退出，网页服务同时停止。\n");
     }
 
