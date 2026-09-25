@@ -12,7 +12,7 @@
 //   sms.exe               控制台菜单 + HTTP 服务（默认端口 4399，仅监听本机）
 //   sms.exe --server      仅启动 HTTP 服务（供网页前端使用）
 //   sms.exe --port 9000   指定端口
-//   sms.exe --threads 2   HTTP 工作线程数（默认 4，范围 1~8，单机用 2 即可）
+//   sms.exe --threads 2   HTTP 工作线程数（默认 1，最多 2，范围 1~2）
 //
 // 数据文件: students.txt  (UTF-8，每行: 学号,姓名,语文,数学,英语；
 //                          保存走 students.txt.tmp + MoveFileEx 原子替换，断电不截断)
@@ -66,13 +66,13 @@ SOCKET               g_listenSock = INVALID_SOCKET;
 
 // HTTP 连接处理策略：固定数量的工作线程 + 收发超时，
 // 避免每个连接都起一个线程（浏览器多开标签页反复刷新会堆积线程）。
-// 默认上限 4 个；单机自己用 2 个就够，可用 --threads N 调整（1~8）。
+// 默认 1 个，最多 2 个，可用 --threads N 调整（1~2）。
 const int   kHttpThreadsMin  = 1;        // --threads 允许的最小值
-const int   kHttpThreadsMax  = 8;        // --threads 允许的最大值
+const int   kHttpThreadsMax  = 2;        // --threads 允许的最大值
 const int   kMaxPending      = 64;       // 排队等待处理的连接上限
 const DWORD kSockTimeoutMs   = 10000;    // 单个连接单次 recv/send 的超时
 
-int g_httpThreads = 4;                   // 工作线程数，默认 4，运行时可用 --threads 改
+int g_httpThreads = 1;                   // 工作线程数，默认 1，运行时可用 --threads 改
 
 std::queue<SOCKET>      g_pending;     // 已 accept、等待处理的连接
 std::mutex              g_queueMtx;
@@ -927,7 +927,7 @@ void handleConnection(SOCKET cli) {
     closesocket(cli);
 }
 
-// 工作线程：从队列取连接并处理。线程数固定（g_httpThreads，默认 4），
+// 工作线程：从队列取连接并处理。线程数固定（g_httpThreads，默认 1，最多 2），
 // 连接再多也只是排队，不会一个连接起一个线程。
 void httpWorkerLoop() {
     for (;;) {
@@ -1022,7 +1022,7 @@ void printUsage() {
         "  sms.exe               控制台菜单 + HTTP 服务(默认端口 %d)\n"
         "  sms.exe --server      仅启动 HTTP 服务(供网页前端使用)\n"
         "  sms.exe --port N      指定端口\n"
-        "  sms.exe --threads N   HTTP 工作线程数，默认 4，范围 %d~%d(单机用 2 即可)\n"
+        "  sms.exe --threads N   HTTP 工作线程数，默认 1，范围 %d~%d\n"
         "  sms.exe --help        显示帮助\n",
         kDefaultPort, kHttpThreadsMin, kHttpThreadsMax);
 }
