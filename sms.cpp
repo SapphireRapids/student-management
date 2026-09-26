@@ -1,3 +1,9 @@
+// 版本: v1.3fix
+//   P1 修复 1: 学号录入增加 validField() 校验（不能含逗号/制表符/控制字符），
+//              与控制台/网页两端一致，避免含逗号学号落盘后重启被静默丢弃。
+//   P1 修复 2: 数据文件与前端页面改为按 EXE 所在目录定位（原先按当前工作目录，
+//              从其他目录启动会读到空数据、前端 404，并在错误目录新建数据文件）。
+
 // ============================================================================
 // 学生成绩管理系统（控制台版 + 内置 HTTP 服务，网页前端共用同一份数据）
 //
@@ -46,8 +52,10 @@
 
 namespace {
 
-const char* kDataFile   = "students.txt";
-const char* kIndexFile  = "index.html";
+// 数据文件与前端页面按 EXE 所在目录定位（v1.3fix：避免依赖当前工作目录）。
+// 两项在 main() 启动时由 initPaths() 初始化为绝对路径；取不到 exe 路径时退回文件名（旧行为）。
+std::string g_dataFile;                    // 数据文件（EXE 目录下的 students.txt）
+std::string g_indexFile;                   // 前端页面（EXE 目录下的 index.html）
 const int   kDefaultPort = 4399;
 const int   kTotalMin = 0;        // 总分下限
 const int   kTotalMax = 1000;     // 总分上限
@@ -78,6 +86,24 @@ std::queue<SOCKET>      g_pending;     // 已 accept、等待处理的连接
 std::mutex              g_queueMtx;
 std::condition_variable g_queueCv;
 bool                    g_httpStop = false;
+
+// 取 EXE 所在目录（带结尾反斜杠）；失败返回空串
+std::string exeDir() {
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::string();
+    std::string p(buf, n);
+    size_t slash = p.find_last_of("\\/");
+    if (slash == std::string::npos) return std::string();
+    return p.substr(0, slash + 1);
+}
+
+// 把数据文件/前端页面定位到 EXE 目录（v1.3fix）。取不到 exe 路径时退回当前目录（旧行为）。
+void initPaths() {
+    std::string dir = exeDir();
+    g_dataFile = dir + "students.txt";
+    g_indexFile = dir + "index.html";
+}
 
 // ------------------------------------------------------------------ 小工具
 std::string trim(const std::string& s) {
@@ -153,7 +179,7 @@ int findStudentLocked(const std::string& stuno) {
 // 落盘走「先写临时文件、再原子替换」：写入过程中断电、强杀进程或蓝屏，
 // students.txt 里留下的仍是上一份完整内容，不会被截断成半截文件。
 void saveLocked() {
-    const std::string tmp = std::string(kDataFile) + ".tmp";
+    const std::string tmp = g_dataFile + ".tmp";
     bool wrote = false;
     {
         std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
@@ -173,11 +199,11 @@ void saveLocked() {
         return;
     }
     // MOVEFILE_WRITE_THROUGH：替换真正落盘后才返回，断电也不会丢刚保存的数据
-    if (!MoveFileExA(tmp.c_str(), kDataFile,
+    if (!MoveFileExA(tmp.c_str(), g_dataFile.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::remove(tmp.c_str());
         std::printf("[警告] 替换 %s 失败（错误码 %lu），本次修改只保存在内存中。\n",
-                    kDataFile, (unsigned long)GetLastError());
+                    g_dataFile.c_str(), (unsigned long)GetLastError());
     }
 }
 
@@ -185,7 +211,7 @@ void loadData() {
     bool legacy = false;      // 读到旧版五字段格式则置位
     {   // 读文件用独立作用域：句柄必须先关掉，否则后面的 MoveFileExA 原子替换
         // 会因共享冲突失败（MSVC 的 ifstream 打开时不带 FILE_SHARE_DELETE）
-        std::ifstream ifs(kDataFile);
+        std::ifstream ifs(g_dataFile);
         if (!ifs) return;
         std::string line;
         while (std::getline(ifs, line)) {
@@ -314,6 +340,7 @@ void opAdd() {
         if (!readLine("请输入学号: ", stuno)) return;
         if (stuno.empty())            { std::printf("学号不能为空，请重新输入。\n"); continue; }
         if (stuno.size() > 20)        { std::printf("学号过长（最多 20 个字符），请重新输入。\n"); continue; }
+        if (!validField(stuno))       { std::printf("学号含非法字符（不能包含逗号、制表符或控制字符），请重新输入。\n"); continue; }
         {
             std::lock_guard<std::mutex> lk(g_mtx);
             if (findStudentLocked(stuno) >= 0) {
@@ -755,6 +782,10 @@ void handleApi(SOCKET cli, HttpRequest& req) {
                 sendJson(cli, 400, "Bad Request", "{\"ok\":false,\"error\":\"学号过长（最多 20 个字符）\"}");
                 return;
             }
+            if (!validField(s.stuno)) {
+                sendJson(cli, 400, "Bad Request", "{\"ok\":false,\"error\":\"学号含非法字符（不能包含逗号、制表符或控制字符）\"}");
+                return;
+            }
             if (!jsonGet(req.body, "name", nm, dv, isNum) || isNum || nm.empty()) {
                 sendJson(cli, 400, "Bad Request", "{\"ok\":false,\"error\":\"姓名不能为空\"}");
                 return;
@@ -902,7 +933,7 @@ void handleConnection(SOCKET cli) {
         if (req.method != "GET" && req.method != "HEAD") {
             sendJson(cli, 405, "Method Not Allowed", "{\"ok\":false,\"error\":\"方法不被支持\"}");
         } else {
-            std::string html = readFileBinary(kIndexFile);
+            std::string html = readFileBinary(g_indexFile.c_str());
             if (html.empty()) {
                 sendResponse(cli, 404, "Not Found", "text/plain; charset=utf-8",
                              "\u7F3A\u5C11 index.html\uFF0C\u8BF7\u5C06\u7F51\u9875\u524D\u7AEF\u6587\u4EF6\u653E\u5230\u7A0B\u5E8F\u540C\u76EE\u5F55\u3002");
@@ -1020,7 +1051,7 @@ bool startHttpServer(int port) {
 
 void printUsage() {
     std::printf(
-        "学生成绩管理系统\n"
+        "学生成绩管理系统  v1.3fix\n"
         "用法:\n"
         "  sms.exe               控制台菜单 + HTTP 服务(默认端口 %d)\n"
         "  sms.exe --server      仅启动 HTTP 服务(供网页前端使用)\n"
@@ -1067,6 +1098,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    initPaths();                                  // v1.3fix: 数据/前端路径定位到 EXE 目录
     loadData();
 
     if (!startHttpServer(g_port)) {
