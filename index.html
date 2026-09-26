@@ -81,6 +81,22 @@
   .stats { font-size: 13px; color: #6a7387; margin: 14px 2px 10px; }
   .stats b { color: #4b6bf5; }
 
+  /* ---------- 着色阈值 ---------- */
+  .thr-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+  .thr-row label { font-size: 13px; color: #6a7387; display: flex; flex-direction: column; gap: 5px; }
+  .thr-row input {
+    padding: 8px 10px; border: 1px solid #d5dbe8; border-radius: 8px; font-size: 14px;
+    outline: none; width: 180px; background: #fff;
+  }
+  .thr-row input:focus { border-color: #4b6bf5; }
+  .thr-row input.bad { border-color: #e74c3c; }
+  .thr-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; font-size: 13px; color: #6a7387; }
+  .thr-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  .thr-legend .sw.bad  { background: #e74c3c; }
+  .thr-legend .sw.mid  { background: #d98c00; }
+  .thr-legend .sw.good { background: #1e9e5a; }
+  .thr-hint { font-size: 12px; color: #8a93a8; margin-top: 10px; line-height: 1.7; }
+
   /* ---------- 表格 ---------- */
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -95,6 +111,7 @@
   tbody tr:hover { background: #eef1fe; }
   td.total { font-weight: 700; color: #4b6bf5; }
   td.good { color: #1e9e5a; font-weight: 600; }
+  td.mid  { color: #d98c00; font-weight: 600; }
   td.bad  { color: #e74c3c; font-weight: 600; }
   .empty-row td { padding: 30px; color: #8a93a8; }
   .link-btn {
@@ -153,12 +170,31 @@
     <form id="form" class="form-grid" autocomplete="off">
       <label>学号<input id="fStuno" maxlength="20" placeholder="如 2024001"></label>
       <label>姓名<input id="fName" maxlength="20" placeholder="如 张三"></label>
-      <label>总分<input id="fTotal" type="number" min="0" max="1000" step="1" placeholder="0~1000"></label>
+      <label>总分<input id="fTotal" type="number" min="0" max="1000000" step="1" placeholder="0~1000000"></label>
       <div class="form-btns">
         <button id="btnSubmit" type="submit" class="btn primary">录入</button>
         <button id="btnCancelEdit" type="button" class="btn hidden">取消修改</button>
       </div>
     </form>
+  </section>
+
+  <!-- 着色阈值 -->
+  <section class="card">
+    <h2>着色阈值</h2>
+    <div class="thr-row">
+      <label>及格线（低于为红）<input id="thrPass" type="number" min="0" max="1000000" step="1"></label>
+      <label>优秀线（达到为绿）<input id="thrGood" type="number" min="0" max="1000000" step="1"></label>
+      <div class="form-btns">
+        <button id="btnThrSave" class="btn primary" type="button">应用阈值</button>
+        <button id="btnThrReset" class="btn" type="button">恢复默认</button>
+      </div>
+    </div>
+    <div id="thrLegend" class="thr-legend"></div>
+    <p class="thr-hint">
+      分数低于及格线显示红色，及格线及以上、优秀线以下显示黄色，优秀线及以上显示绿色。
+      阈值只影响表格配色，不改动总分范围；设置保存在本浏览器的 localStorage 里，
+      换浏览器或换电脑需要重新设置。默认取总分上限的 60% 和 90%。
+    </p>
   </section>
 
   <!-- 查找 / 排序 -->
@@ -220,6 +256,89 @@
   var editStuno = null;          // 非 null 表示处于修改模式
   var toastTimer = null;
   var modalOkHandler = null;
+  var TOTAL_MIN = 0;             // 与 sms.cpp 的 kTotalMin/kTotalMax 保持一致
+  var TOTAL_MAX = 1000000;
+
+  /* ---------------- 着色阈值（用户可自定义） ---------------- */
+  var THR_KEY = "sms.colorThresholds";            // localStorage 键名
+  var THR_DEF_PASS = Math.round(TOTAL_MAX * 0.6); // 默认及格线：量程的 60%
+  var THR_DEF_GOOD = Math.round(TOTAL_MAX * 0.9); // 默认优秀线：量程的 90%
+  var thr = { pass: THR_DEF_PASS, good: THR_DEF_GOOD };
+
+  function thrParse(s) {
+    s = String(s).trim();
+    if (!/^\d+$/.test(s)) return null;
+    var n = parseInt(s, 10);
+    if (n < TOTAL_MIN || n > TOTAL_MAX) return null;
+    return n;
+  }
+
+  /* 两个阈值都合法且及格线小于优秀线才算有效，否则返回 null */
+  function thrValid(ps, gs) {
+    var p = thrParse(ps), g = thrParse(gs);
+    if (p === null || g === null || p >= g) return null;
+    return { pass: p, good: g };
+  }
+
+  function thrLoad() {
+    var o = null;
+    try { o = JSON.parse(localStorage.getItem(THR_KEY) || "null"); } catch (e) { o = null; }
+    var v = o && thrValid(o.pass, o.good);
+    if (v) thr = v;   // 存的是脏数据时保持默认值
+  }
+
+  function thrStore() {
+    try { localStorage.setItem(THR_KEY, JSON.stringify(thr)); } catch (e) { /* 隐私模式下写入失败也不影响本次配色 */ }
+  }
+
+  function thrShow(msg) {
+    $("thrPass").value = thr.pass;
+    $("thrGood").value = thr.good;
+    $("thrPass").classList.remove("bad");
+    $("thrGood").classList.remove("bad");
+    var lg = $("thrLegend");
+    lg.textContent = "";
+    [
+      ["bad", "低于 " + thr.pass + " 分：红色"],
+      ["mid", thr.pass + " ~ " + (thr.good - 1) + " 分：黄色"],
+      ["good", thr.good + " 分及以上：绿色"]
+    ].forEach(function (item) {
+      var span = document.createElement("span");
+      var sw = document.createElement("i");
+      sw.className = "sw " + item[0];
+      span.appendChild(sw);
+      span.appendChild(document.createTextNode(item[1]));
+      lg.appendChild(span);
+    });
+    if (msg) toast(msg, "info");
+  }
+
+  $("btnThrSave").addEventListener("click", function () {
+    var p = thrParse($("thrPass").value);
+    var g = thrParse($("thrGood").value);
+    $("thrPass").classList.toggle("bad", p === null);
+    $("thrGood").classList.toggle("bad", g === null);
+    var orderBad = p !== null && g !== null && p >= g;   // 及格线必须小于优秀线
+    if (orderBad) {
+      $("thrPass").classList.add("bad");
+      $("thrGood").classList.add("bad");
+    }
+    if (p === null || g === null || orderBad) {
+      toast("阈值无效：须为 0~" + TOTAL_MAX + " 的整数，且及格线必须小于优秀线", "err");
+      return;
+    }
+    thr = { pass: p, good: g };
+    thrStore();
+    thrShow("已应用着色阈值：及格线 " + thr.pass + "，优秀线 " + thr.good);
+    return load();
+  });
+
+  $("btnThrReset").addEventListener("click", function () {
+    try { localStorage.removeItem(THR_KEY); } catch (e) { /* 忽略 */ }
+    thr = { pass: THR_DEF_PASS, good: THR_DEF_GOOD };
+    thrShow("已恢复默认阈值：及格线 " + thr.pass + "，优秀线 " + thr.good);
+    return load();
+  });
 
   /* ---------------- 操作提示 ---------------- */
   function toast(msg, kind) {
@@ -254,7 +373,7 @@
       });
   }
 
-  function scoreCls(v) { return v >= 900 ? "good" : (v < 600 ? "bad" : ""); }
+  function scoreCls(v) { return v < thr.pass ? "bad" : (v < thr.good ? "mid" : "good"); }
 
   function render(list) {
     var tbody = $("tbody");
@@ -352,7 +471,7 @@
     function mark(id, bad) { $(id).classList.toggle("bad", bad); if (bad) ok = false; }
     mark("fStuno", !stuno || stuno.length > 20);
     mark("fName", !name);
-    var badTotal = t === "" || !/^\d+$/.test(t) || +t > 1000;
+    var badTotal = t === "" || !/^\d+$/.test(t) || +t < TOTAL_MIN || +t > TOTAL_MAX;
     mark("fTotal", badTotal);
     return ok;
   }
@@ -360,7 +479,7 @@
   $("form").addEventListener("submit", function (ev) {
     ev.preventDefault();
     if (!validForm()) {
-      toast("输入有误：学号/姓名不能为空，总分须为 0~1000 的整数", "err");
+      toast("输入有误：学号/姓名不能为空，总分须为 0~1000000 的整数", "err");
       return;
     }
     var payload = {
@@ -477,6 +596,8 @@
   bindSort("btnSortStuno", "stuno", "已按学号排序");
 
   /* ---------------- 启动 ---------------- */
+  thrLoad();
+  thrShow();
   cancelEdit();
   load().then(function () { toast("学生成绩管理系统已就绪", "info"); });
 })();
